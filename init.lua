@@ -372,6 +372,8 @@ do
     spec = {
       { '<leader>s', group = '[S]earch', mode = { 'n', 'v' } },
       { '<leader>t', group = '[T]oggle' },
+      { '<leader>u', group = '[U]I' },
+      { '<leader>l', group = '[L]ive preview' },
       { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } }, -- Enable gitsigns recommended keymaps first
       { 'gr', group = 'LSP Actions', mode = { 'n' } },
     },
@@ -383,18 +385,11 @@ do
   -- change the command under that to load whatever the name of that colorscheme is.
   --
   -- If you want to see what colorschemes are already installed, you can use `:Telescope colorscheme`.
-  vim.pack.add { gh 'folke/tokyonight.nvim' }
-  ---@diagnostic disable-next-line: missing-fields
-  require('tokyonight').setup {
-    styles = {
-      comments = { italic = false }, -- Disable italics in comments
-    },
-  }
+  vim.pack.add { gh 'folke/tokyonight.nvim' }  -- kept installed, easy to switch back
+  vim.pack.add { gh 'EdenEast/nightfox.nvim' }
 
-  -- Load the colorscheme here.
-  -- Like many other themes, this one has different styles, and you could load
-  -- any other, such as 'tokyonight-storm', 'tokyonight-moon', or 'tokyonight-day'.
-  vim.cmd.colorscheme 'tokyonight-night'
+  -- Load the colorscheme. Other nightfox variants: nightfox, nordfox, duskfox, dawnfox, dayfox, terafox
+  vim.cmd.colorscheme 'carbonfox'
 
   -- Highlight todo, notes, etc in comments
   vim.pack.add { gh 'folke/todo-comments.nvim' }
@@ -441,6 +436,35 @@ do
 
   -- ... and there is more!
   --  Check out: https://github.com/nvim-mini/mini.nvim
+
+  -- [[ snacks.nvim ]]
+  -- A collection of small, focused QoL improvements by folke.
+  vim.pack.add { gh 'folke/snacks.nvim' }
+  require('snacks').setup {
+    bigfile = { enabled = true },            -- disable heavy features for very large files
+    dashboard = { enabled = true },          -- nice startup screen
+    notifier = { enabled = true, timeout = 3000 }, -- replaces vim.notify with a styled popup
+    quickfile = { enabled = true },          -- open files faster
+    scroll = { enabled = true },             -- smooth scrolling
+    terminal = { enabled = true },           -- floating terminal
+  }
+
+  -- Toggle a floating terminal (quick one-off commands)
+  vim.keymap.set({ 'n', 't' }, '<leader>tt', function() Snacks.terminal() end, { desc = '[T]oggle [T]erminal' })
+  -- Open a persistent right-side split terminal — run `claude` or any CLI here
+  -- Each unique id keeps its own session, so you can have one for claude and one for shell
+  vim.keymap.set({ 'n', 't' }, '<leader>ta', function()
+    Snacks.terminal(nil, { id = 'ai', win = { position = 'right', width = 0.4 } })
+  end, { desc = '[T]erminal: [A]I / side panel' })
+  vim.keymap.set({ 'n', 't' }, '<leader>ts', function()
+    Snacks.terminal(nil, { id = 'shell', win = { position = 'bottom', height = 0.3 } })
+  end, { desc = '[T]erminal: [S]hell (bottom)' })
+  -- Dismiss all visible notifications
+  vim.keymap.set('n', '<leader>un', function() Snacks.notifier.hide() end, { desc = '[U]I: dismiss [N]otifications' })
+
+  -- [[ vim-be-good ]]
+  -- A game for practising Vim motions. Run :VimBeGood to start.
+  vim.pack.add { gh 'ThePrimeagen/vim-be-good' }
 end
 
 -- ============================================================
@@ -686,16 +710,42 @@ do
   --  See `:help lsp-config` for information about keys and how to configure
   ---@type table<string, vim.lsp.Config>
   local servers = {
-    -- clangd = {},
-    -- gopls = {},
-    -- pyright = {},
-    -- rust_analyzer = {},
-    --
+    clangd = {}, -- C and C++
+
+    gopls = {}, -- Go
+
+    rust_analyzer = {}, -- Rust (binary provided by rustup; Mason installs a fallback)
+
+    omnisharp = {}, -- C# (requires .NET SDK on the machine)
+
+    jdtls = {}, -- Java (requires JDK on the machine)
+
+    marksman = {}, -- Markdown
+
+    dockerls = {}, -- Dockerfile
+
+    docker_compose_language_service = {}, -- docker-compose.yml
+
+    html = {},   -- HTML LSP
+    cssls = {},  -- CSS LSP
+
+    texlab = {}, -- LaTeX LSP
+
     -- Some languages (like typescript) have entire language plugins that can be useful:
     --    https://github.com/pmizio/typescript-tools.nvim
     --
     -- But for many setups, the LSP (`ts_ls`) will work just fine
     -- ts_ls = {},
+
+    pyright = {
+      settings = {
+        pyright = {
+          disableOrganizeImports = true, -- ruff handles imports
+        },
+      },
+    },
+
+    ruff = {}, -- formatting + import sorting LSP (lint handled by pylint)
 
     stylua = {}, -- Used to format Lua code
 
@@ -753,7 +803,14 @@ do
   -- You can press `g?` for help in this menu.
   local ensure_installed = vim.tbl_keys(servers or {})
   vim.list_extend(ensure_installed, {
-    -- You can add other tools here that you want Mason to install
+    'tree-sitter-cli', -- needed by nvim-treesitter to compile parsers
+    'pylint', -- Python linter (reads project .pylintrc automatically)
+    'goimports', -- Go: organizes imports + formats (replaces gofmt for imports)
+    'gofumpt', -- Go: stricter formatter on top of gofmt
+    'clang-format', -- C / C++ formatter
+    'prettier', -- Markdown formatter
+    'csharpier', -- C# formatter
+    'latexindent', -- LaTeX formatter
   })
 
   require('mason-tool-installer').setup { ensure_installed = ensure_installed }
@@ -791,15 +848,42 @@ do
     -- You can also specify external formatters in here.
     formatters_by_ft = {
       -- rust = { 'rustfmt' },
-      -- Conform can also run multiple formatters sequentially
-      -- python = { "isort", "black" },
-      --
       -- You can use 'stop_after_first' to run the first available formatter from the list
       -- javascript = { "prettierd", "prettier", stop_after_first = true },
+      python = { 'ruff_format' },
+      go = { 'goimports', 'gofumpt' },
+      rust = { 'rustfmt' }, -- rustfmt ships with rustup, not Mason
+      c = { 'clang_format' },
+      cpp = { 'clang_format' },
+      cs = { 'csharpier' },
+      markdown = { 'prettier' },
+      tex = { 'latexindent' },
     },
   }
 
   vim.keymap.set({ 'n', 'v' }, '<leader>f', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
+end
+
+-- ============================================================
+-- SECTION 6.5: LINTING
+-- nvim-lint runs pylint on Python files and surfaces results as diagnostics.
+-- pylint automatically searches up the directory tree for .pylintrc, so your
+-- company's config is picked up without any extra setup here.
+-- ============================================================
+do
+  vim.pack.add { gh 'mfussenegger/nvim-lint' }
+  local lint = require 'lint'
+
+  lint.linters_by_ft = {
+    python = { 'pylint' },
+  }
+
+  vim.api.nvim_create_autocmd({ 'BufWritePost', 'BufReadPost', 'InsertLeave' }, {
+    group = vim.api.nvim_create_augroup('kickstart-lint', { clear = true }),
+    callback = function()
+      lint.try_lint()
+    end,
+  })
 end
 
 -- ============================================================
@@ -898,7 +982,7 @@ do
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' }
+  local parsers = { 'bash', 'c', 'c_sharp', 'cpp', 'css', 'diff', 'dockerfile', 'go', 'html', 'java', 'latex', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'python', 'query', 'rust', 'vim', 'vimdoc' }
   require('nvim-treesitter').install(parsers)
 
   ---@param buf integer
@@ -944,6 +1028,60 @@ do
       end
     end,
   })
+end
+
+-- ============================================================
+-- SECTION 8.5: WRITING, DOCUMENTS & FILE NAVIGATION
+-- render-markdown, obsidian.nvim, vimtex, live-server, yazi
+-- ============================================================
+do
+  -- [[ Inline Markdown rendering ]]
+  -- Renders markdown headers, bold, italic, code blocks etc. visually inside the buffer.
+  -- Works for any .md file, not just Obsidian notes.
+  vim.pack.add { gh 'MeanderingProgrammer/render-markdown.nvim' }
+  require('render-markdown').setup {}
+
+  -- [[ Obsidian vault integration ]]
+  -- Wiki links, tags, backlinks, daily notes, search across your vault.
+  -- Set the OBSIDIAN_VAULT env var in your shell on each machine, or change the path below.
+  -- The vault directory must already exist before opening Neovim.
+  vim.pack.add { gh 'obsidian-nvim/obsidian.nvim' }
+  require('obsidian').setup {
+    workspaces = {
+      {
+        name = 'vault',
+        path = vim.fn.expand(vim.env.OBSIDIAN_VAULT or '~/obsidian'),
+      },
+    },
+    ui = { enable = false }, -- render-markdown.nvim handles visuals
+  }
+
+  -- [[ LaTeX ]]
+  -- vimtex provides compilation (\ll), PDF viewer (\lv), and navigation.
+  -- Per-machine system deps: sudo apt install texlive-full zathura
+  -- On macOS use 'skim' as the view method instead of 'zathura'.
+  vim.pack.add { gh 'lervag/vimtex' }
+  vim.g.vimtex_view_method = 'zathura'
+  vim.g.vimtex_compiler_method = 'latexmk'
+
+  -- [[ HTML live preview ]]
+  -- Opens current HTML file in the browser with live reload on save.
+  -- Per-machine dep: npm install -g live-server
+  vim.pack.add { gh 'barrett-ruth/live-server.nvim' }
+  require('live-server').setup {}
+  vim.keymap.set('n', '<leader>lh', '<cmd>LiveServerStart<cr>', { desc = '[L]ive [H]TML preview start' })
+  vim.keymap.set('n', '<leader>lH', '<cmd>LiveServerStop<cr>', { desc = '[L]ive [H]TML preview stop' })
+
+  -- [[ Yazi file manager ]]
+  -- Floating file manager with image previews, bulk rename, etc.
+  -- Replaces a traditional file tree. yazi is already installed on this machine.
+  -- Per-machine dep: install yazi (https://github.com/sxyazi/yazi)
+  vim.pack.add { gh 'mikavilpas/yazi.nvim' }
+  require('yazi').setup {
+    open_for_directories = true, -- `nvim .` opens yazi instead of netrw
+  }
+  vim.keymap.set('n', '<leader>e', '<cmd>Yazi<cr>', { desc = 'Open [E]xplorer (Yazi)' })
+  vim.keymap.set('n', '<leader>E', '<cmd>Yazi cwd<cr>', { desc = 'Open [E]xplorer at cwd' })
 end
 
 -- ============================================================
