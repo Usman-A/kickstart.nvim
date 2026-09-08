@@ -13,3 +13,9 @@ nvim-pack-lock.json
 
 .DS_Store
 
+
+# Machine-local configuration (see SECTION 8.6 of init.lua).
+# Anything specific to one machine or employer lives here and is never
+# committed: file-type associations, house indentation, private DB tooling.
+lua/machine.lua
+sqlfluff.local.cfg

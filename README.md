@@ -12,6 +12,161 @@ A starting point for Neovim that is:
 
 ## Installation
 
+### Machine setup scripts (recommended)
+
+This config is **dual-target**: it runs on Linux/macOS and on native Windows.
+`init.lua` detects the platform and branches where it has to, so the same clone
+works on any of them. Rather than installing the system dependencies by hand,
+run the setup script for your OS:
+
+| OS | Script | Package sources |
+| :- | :----- | :-------------- |
+| Linux, macOS | `./machine-setup.sh` | apt / brew / pacman / paru / yay, cargo, nvm, rustup |
+| Windows | `.\machine-setup.ps1` | winget, npm |
+
+Both scripts are idempotent — they skip anything already installed — and both
+accept the same skip flags for the heavy optional dependencies:
+
+```sh
+# Linux / macOS
+./machine-setup.sh --skip-latex --skip-java --skip-dotnet --skip-go
+```
+
+```powershell
+# Windows - run as yourself, NOT elevated
+.\machine-setup.ps1 -SkipLatex -SkipJava -SkipDotnet -SkipGo -SkipRust
+```
+
+> [!IMPORTANT]
+> **`machine-setup.ps1` needs no administrator rights.** This is deliberate:
+> on a managed corporate machine you may only have policy-scoped elevation
+> (e.g. Microsoft Intune Endpoint Privilege Management, "Run with elevated
+> access") rather than real UAC admin. Everything installs into your own
+> profile — `winget --scope user` into
+> `%LOCALAPPDATA%\Microsoft\WinGet\Packages`, portable zips into
+> `%LOCALAPPDATA%\Programs`, npm globals into `%APPDATA%\npm`. The machine
+> `PATH` is never modified.
+>
+> Node, Go and the JDK publish MSIs that insist on installing machine-wide
+> (they fail with exit `1602` when UAC is declined), so the script installs
+> those three from their official **ZIP** distributions instead and adds them
+> to your user `PATH`. Same binaries, no elevation.
+>
+> The **.NET SDK** is the sole exception — its installer genuinely requires
+> admin. It is usually already present on a corporate image, so the script
+> checks and reports rather than failing. Only `omnisharp` (C#) needs it; drop
+> `omnisharp` from the `servers` table in `init.lua` if you would rather Mason
+> stopped retrying it.
+
+> [!WARNING]
+> Do not run `machine-setup.ps1` from a shell elevated as a *different*
+> account. The user-scope installs would land in that account's profile, so
+> `tree-sitter`, the npm globals and the winget packages would not be on
+> **your** `PATH` — and treesitter would fail with exactly the same error you
+> were trying to fix. Run it as yourself, unelevated.
+
+After the script finishes, **open a new shell** so the updated user `PATH` is
+visible, then run `nvim` and let `vim.pack` and Mason do the rest. Confirm with
+`:checkhealth`.
+
+Treesitter parsers compile asynchronously, so they are not ready the instant
+Neovim opens. The config only requests the parsers actually missing and
+reports progress, so on first launch you get a notification naming them and a
+second one when the compile finishes — no guessing whether highlighting is
+broken or merely still building. To check by hand:
+
+```vim
+:lua print(#require('nvim-treesitter').get_installed('parsers'))
+```
+
+If the compile *fails*, the notification says so. On Windows the usual cause
+is the tree-sitter CLI not finding a C compiler — see the `CC` note below.
+
+#### What differs per platform
+
+Most of the config is platform-agnostic. These are the places it branches:
+
+| Concern | Linux | macOS | Windows |
+| :------ | :---- | :---- | :------ |
+| vimtex PDF viewer | `zathura` | `skim` | `sumatrapdf` |
+| LaTeX distribution | texlive + latexmk | mactex-no-gui | MiKTeX (ships latexmk) |
+| C compiler for treesitter | gcc (build-essential) | Xcode CLT | gcc (WinLibs) |
+| `telescope-fzf-native` build | `make` | `make` | `make`, else CMake fallback |
+| tree-sitter CLI | `cargo install tree-sitter-cli` | same | `npm install -g tree-sitter-cli` (prebuilt, no Rust needed) |
+| `CC` for the tree-sitter CLI | unset (finds `cc`) | unset | `vim.env.CC = 'gcc'` — see below |
+| Clipboard | native X/Wayland | native | native; **WSL** bridges via `win32yank` |
+| Rust toolchain | default | default | `stable-gnu`, to avoid needing VS Build Tools |
+| Node / Go / JDK | pkg manager, nvm | brew | portable **zips** into `%LOCALAPPDATA%\Programs` (the MSIs need admin) |
+
+The `CC` row is worth calling out, because the failure is opaque. The
+tree-sitter CLI shells out to `cc` (or MSVC `cl`) to compile a parser. MinGW
+and WinLibs ship `gcc` but no `cc`, so every parser build dies with a bare:
+
+```
+Error during "tree-sitter build": Error: Failed to compile parser
+Caused by: Error: program not found
+```
+
+`init.lua` fixes this by setting `vim.env.CC = 'gcc'` on Windows when neither
+`cc` nor `cl` is present. That is scoped to Neovim's child processes, so it
+needs no machine-wide environment variable and no multi-GB Visual Studio
+Build Tools install.
+
+Anything the config cannot find, it degrades around rather than erroring:
+`telescope-fzf-native` is only loaded if it can be built, and `yazi.nvim` is
+only wired up if the `yazi` binary exists — otherwise `open_for_directories`
+would hijack `nvim .` and leave you without a working file explorer.
+
+#### Machine-local configuration
+
+Anything tied to a single machine or employer belongs in **`lua/machine.lua`**,
+which is gitignored and loaded with `pcall` at the end of SECTION 8.6. A fresh
+clone has no such file and everything still works — that is what keeps this
+repo portable and free of internal details.
+
+It is the right home for:
+
+- extra file-type associations for in-house SQL extensions (many Oracle shops
+  use their own set for package bodies, views, table DDL and so on)
+- house indentation rules
+- a sqlfluff override: set `vim.g.sqlfluff_config` to a config path and
+  conform uses it instead of the generic `sqlfluff.cfg` committed here
+- database connections and any private tooling that wraps them
+
+```lua
+-- lua/machine.lua (gitignored)
+vim.filetype.add { extension = { xyz = 'plsql' } }
+vim.g.sqlfluff_config = vim.fs.joinpath(vim.fn.stdpath 'config', 'sqlfluff.local.cfg')
+vim.g.dbs = { mydb = vim.env.MYDB_URL }  -- never hardcode credentials
+```
+
+> [!NOTE]
+> `vim-dadbod` cannot do Oracle **wallet** authentication. Its
+> `db#adapter#oracle#interactive()` always builds `user/password@host` and
+> falls back to `system/oracle`; nothing emits the `/@ALIAS` form a wallet
+> needs. If your site authenticates via a wallet, drive `sqlplus` directly
+> from `lua/machine.lua` rather than through dadbod.
+
+#### SQL formatting
+
+`sqlfluff` is wired to the `sql` filetype only, **not** `plsql`. It parses
+PL/SQL package bodies cleanly, but `sqlfluff format` always runs its own
+reindent/reflow pass — not rule-driven, and not switchable off via
+`exclude_rules` or a `rules` allowlist — which hoists `exception` out to the
+wrong nesting level. There is no configuration that makes it safe for
+procedural code, so `<leader>f` on a PL/SQL buffer tells you no formatter is
+configured instead of quietly mangling it. Oracle's SQLcl (`format buffer`)
+is the upgrade path if you ever install it.
+
+Two timing details, both measured rather than guessed:
+
+- sqlfluff needs **~1s** just to start (Python interpreter startup, roughly
+  independent of input size). conform's default `timeout_ms` is 1000, so
+  synchronous formatting sat right on the boundary and failed intermittently.
+  `format_on_save` here uses 3000ms.
+- `timeout_ms` has **no effect when `async = true`**, which is how `<leader>f`
+  runs — so interactive formatting was never affected by this.
+
 ### Install Neovim
 
 Kickstart.nvim targets *only* the latest

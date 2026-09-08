@@ -85,6 +85,25 @@ P.S. You can delete this when you're done too. It's your config now! :)
 --]]
 
 -- ============================================================
+-- SECTION 0: PLATFORM DETECTION
+-- This config is dual-target: it runs on Linux/macOS and on native Windows.
+-- Anything OS-specific below branches on these flags rather than assuming *nix.
+-- Run machine-setup.sh (Linux/macOS) or machine-setup.ps1 (Windows) for system deps.
+-- ============================================================
+local is_win = vim.fn.has 'win32' == 1
+local is_mac = vim.fn.has 'mac' == 1
+local is_wsl = not is_win and (vim.fn.has 'wsl' == 1 or (vim.uv.os_uname().release or ''):lower():find 'microsoft' ~= nil)
+
+-- The tree-sitter CLI shells out to `cc` (or MSVC `cl`) to compile parsers.
+-- MinGW/WinLibs ships `gcc` only, so parser builds fail with a bare
+-- "Error: program not found". Point CC at gcc for Neovim's child processes
+-- rather than setting a machine-wide variable or requiring a multi-GB
+-- Visual Studio Build Tools install. Only applies when nothing else is found.
+if is_win and vim.fn.executable 'cc' == 0 and vim.fn.executable 'cl' == 0 and vim.fn.executable 'gcc' == 1 then
+  vim.env.CC = 'gcc'
+end
+
+-- ============================================================
 -- SECTION 1: FOUNDATION
 -- Core Neovim settings, leaders, options, basic keymaps, basic autocmds
 -- ============================================================
@@ -123,6 +142,32 @@ do
   --  Remove this option if you want your OS clipboard to remain independent.
   --  See `:help 'clipboard'`
   vim.schedule(function() vim.o.clipboard = 'unnamedplus' end)
+
+  -- Under WSL there is no X/Wayland clipboard, so `unnamedplus` silently does
+  -- nothing unless we bridge to the Windows clipboard. Prefer win32yank (fast,
+  -- and handles paste); otherwise fall back to clip.exe + powershell, which is
+  -- always available but cannot round-trip as cleanly.
+  -- Native Windows and desktop Linux/macOS need none of this.
+  if is_wsl then
+    if vim.fn.executable 'win32yank.exe' == 1 then
+      vim.g.clipboard = {
+        name = 'win32yank-wsl',
+        copy = { ['+'] = { 'win32yank.exe', '-i', '--crlf' }, ['*'] = { 'win32yank.exe', '-i', '--crlf' } },
+        paste = { ['+'] = { 'win32yank.exe', '-o', '--lf' }, ['*'] = { 'win32yank.exe', '-o', '--lf' } },
+        cache_enabled = false,
+      }
+    elseif vim.fn.executable 'clip.exe' == 1 then
+      vim.g.clipboard = {
+        name = 'wsl-clip.exe',
+        copy = { ['+'] = { 'clip.exe' }, ['*'] = { 'clip.exe' } },
+        paste = {
+          ['+'] = { 'powershell.exe', '-NoLogo', '-NoProfile', '-Command', '[Console]::Out.Write($(Get-Clipboard -Raw))' },
+          ['*'] = { 'powershell.exe', '-NoLogo', '-NoProfile', '-Command', '[Console]::Out.Write($(Get-Clipboard -Raw))' },
+        },
+        cache_enabled = true,
+      }
+    end
+  end
 
   -- Enable break indent
   vim.o.breakindent = true
@@ -294,8 +339,15 @@ do
       local kind = ev.data.kind
       if kind ~= 'install' and kind ~= 'update' then return end
 
-      if name == 'telescope-fzf-native.nvim' and vim.fn.executable 'make' == 1 then
-        run_build(name, { 'make' }, ev.data.path)
+      -- Prefer `make` (present on *nix, and on Windows via choco mingw/make).
+      -- Fall back to CMake, which is the supported Windows/MSVC build path.
+      if name == 'telescope-fzf-native.nvim' then
+        if vim.fn.executable 'make' == 1 then
+          run_build(name, { 'make' }, ev.data.path)
+        elseif vim.fn.executable 'cmake' == 1 then
+          run_build(name, { 'cmake', '-S.', '-Bbuild', '-DCMAKE_BUILD_TYPE=Release' }, ev.data.path)
+          run_build(name, { 'cmake', '--build', 'build', '--config', 'Release', '--target', 'install' }, ev.data.path)
+        end
         return
       end
 
@@ -374,6 +426,8 @@ do
       { '<leader>t', group = '[T]oggle' },
       { '<leader>u', group = '[U]I' },
       { '<leader>l', group = '[L]ive preview' },
+      { '<leader>d', group = '[D]atabase', mode = { 'n', 'v' } },
+      { '<leader>w', group = '[W]orkspace / session' },
       { '<leader>h', group = 'Git [H]unk', mode = { 'n', 'v' } }, -- Enable gitsigns recommended keymaps first
       { 'gr', group = 'LSP Actions', mode = { 'n' } },
     },
@@ -447,6 +501,11 @@ do
     quickfile = { enabled = true },          -- open files faster
     scroll = { enabled = true },             -- smooth scrolling
     terminal = { enabled = true },           -- floating terminal
+    -- Enabled only for Snacks.picker.projects() (<leader>wp in SECTION 8.7).
+    -- ui_select MUST stay false: it defaults to true when the picker is
+    -- enabled and would take over vim.ui.select, silently replacing the
+    -- telescope-ui-select extension configured in SECTION 4.
+    picker = { enabled = true, ui_select = false },
   }
 
   -- Toggle a floating terminal (quick one-off commands)
@@ -502,7 +561,11 @@ do
     gh 'nvim-telescope/telescope.nvim',
     gh 'nvim-telescope/telescope-ui-select.nvim',
   }
-  if vim.fn.executable 'make' == 1 then table.insert(telescope_plugins, gh 'nvim-telescope/telescope-fzf-native.nvim') end
+  -- fzf-native is a compiled extension: include it only if we can actually build it.
+  -- `make` on *nix / choco-mingw, or `cmake` on Windows with MSVC.
+  if vim.fn.executable 'make' == 1 or vim.fn.executable 'cmake' == 1 then
+    table.insert(telescope_plugins, gh 'nvim-telescope/telescope-fzf-native.nvim')
+  end
 
   -- NOTE: You can install multiple plugins at once
   vim.pack.add(telescope_plugins)
@@ -768,7 +831,12 @@ do
             checkThirdParty = false,
             -- NOTE: this is a lot slower and will cause issues when working on your own configuration.
             --  See https://github.com/neovim/nvim-lspconfig/issues/3189
-            library = vim.tbl_extend('force', vim.api.nvim_get_runtime_file('', true), {
+            -- NOTE: use list_extend, NOT tbl_extend. `vim.tbl_extend` merges by
+            -- KEY, so on two list-like tables it overwrites indices 1..n of the
+            -- runtime-file list with the '${3rd}' entries, silently dropping two
+            -- real runtime paths. Upstream kickstart hit the same bug -- see
+            -- commit bd53f28 "Fix corrupted library path of lua_ls".
+            library = vim.list_extend(vim.api.nvim_get_runtime_file('', true), {
               '${3rd}/luv/library',
               '${3rd}/busted/library',
             }),
@@ -811,6 +879,7 @@ do
     'prettier', -- Markdown formatter
     'csharpier', -- C# formatter
     'latexindent', -- LaTeX formatter
+    'sqlfluff', -- Oracle SQL formatter/linter (config: sqlfluff.cfg)
   })
 
   require('mason-tool-installer').setup { ensure_installed = ensure_installed }
@@ -830,6 +899,12 @@ do
   vim.pack.add { gh 'stevearc/conform.nvim' }
   require('conform').setup {
     notify_on_error = false,
+    -- conform's default, set explicitly for clarity. Note its scope is
+    -- narrower than the name suggests: it fires only when a filetype HAS
+    -- formatters configured but none are available. A filetype with no
+    -- formatters at all stays silent, which is why the <leader>f keymap
+    -- below inspects the callback error itself.
+    notify_no_formatters = true,
     format_on_save = function(bufnr)
       -- You can specify filetypes to autoformat on save here:
       local enabled_filetypes = {
@@ -837,7 +912,14 @@ do
         -- python = true,
       }
       if enabled_filetypes[vim.bo[bufnr].filetype] then
-        return { timeout_ms = 500 }
+        -- 500ms (the kickstart default here) is too tight for interpreted
+        -- formatters. Measured on this machine, sqlfluff takes 920-1150ms
+        -- just to start -- Python interpreter startup, largely independent
+        -- of input size -- so it would time out on literally every save,
+        -- and conform reports that only in its log. prettier and latexindent
+        -- are in similar territory. 3000ms leaves real headroom while still
+        -- bailing out if something hangs.
+        return { timeout_ms = 3000 }
       else
         return nil
       end
@@ -858,10 +940,75 @@ do
       cs = { 'csharpier' },
       markdown = { 'prettier' },
       tex = { 'latexindent' },
+
+      -- Oracle SQL. Deliberately NOT wired up for `plsql`.
+      --
+      -- sqlfluff's oracle dialect does parse PL/SQL package bodies cleanly
+      -- (zero unparsable sections), but `sqlfluff format` corrupts their
+      -- layout: it hoists `exception` out to the wrong nesting level and
+      -- breaks `select ... where` across lines. Neither
+      --   exclude_rules = layout.indent
+      -- nor an allowlist of
+      --   rules = layout.spacing
+      -- prevents it -- `format` always runs its own reindent/reflow pass,
+      -- which is not rule-driven and cannot be switched off. So there is no
+      -- configuration that makes it safe here.
+      --
+      -- Consequence: <leader>f on a PL/SQL buffer reports that no formatter
+      -- is configured (see the keymap below) rather than quietly mangling
+      -- the code. If a real PL/SQL formatter becomes available -- Oracle's
+      -- SQLcl has `format buffer` -- wire that up here instead.
+      sql = { 'sqlfluff' },
+    },
+    formatters = {
+      -- Pinned to our own config so behaviour is identical in every repo.
+      -- Without --config sqlfluff defaults to the `ansi` dialect, which
+      -- cannot parse Oracle at all.
+      sqlfluff = {
+        command = 'sqlfluff',
+        -- `format` (not the built-in's `fix`): we want layout changes only,
+        -- not rule auto-fixes rewriting existing SQL.
+        -- A function, not a table, so the path is resolved at format time.
+        -- A machine-local module (see the end of SECTION 8.6) may set
+        -- vim.g.sqlfluff_config to point at house-style overrides; absent
+        -- that we use the generic Oracle config committed here, so this file
+        -- carries no site-specific style.
+        args = function()
+          local cfg = vim.g.sqlfluff_config or vim.fs.joinpath(vim.fn.stdpath 'config', 'sqlfluff.cfg')
+          return { 'format', '--config', cfg, '-' }
+        end,
+        stdin = true,
+        -- IMPORTANT: conform's built-in sqlfluff sets `require_cwd = true`
+        -- with a cwd probe for .sqlfluff / pyproject.toml / setup.cfg /
+        -- tox.ini. User config is merged ON TOP of that built-in, so without
+        -- this override the formatter reports "Root directory not found" and
+        -- silently does nothing in any repo lacking one of those files --
+        -- <leader>f appears to succeed but the buffer never changes.
+        -- We pass --config explicitly, so no project-root probe is needed.
+        require_cwd = false,
+      },
     },
   }
 
-  vim.keymap.set({ 'n', 'v' }, '<leader>f', function() require('conform').format { async = true } end, { desc = '[F]ormat buffer' })
+  -- Report back instead of failing silently.
+  --
+  -- Two silent-failure modes are worth closing. conform's own
+  -- notify_no_formatters only fires when a filetype HAS formatters
+  -- configured but none are available -- for a filetype with none at all
+  -- (plsql, here) it just returns "No formatters available for buffer" and
+  -- says nothing. And `notify_on_error = false` above suppresses real
+  -- failures too. Both leave <leader>f looking like it worked.
+  vim.keymap.set({ 'n', 'v' }, '<leader>f', function()
+    local ft = vim.bo.filetype
+    require('conform').format({ async = true }, function(err)
+      if not err then return end
+      if tostring(err):match 'No formatters available' then
+        vim.notify(("No formatter configured for filetype '%s'"):format(ft), vim.log.levels.WARN)
+      else
+        vim.notify('Format failed: ' .. tostring(err), vim.log.levels.WARN)
+      end
+    end)
+  end, { desc = '[F]ormat buffer' })
 end
 
 -- ============================================================
@@ -982,8 +1129,51 @@ do
   vim.pack.add { { src = gh 'nvim-treesitter/nvim-treesitter', version = 'main' } }
 
   -- Ensure basic parsers are installed
-  local parsers = { 'bash', 'c', 'c_sharp', 'cpp', 'css', 'diff', 'dockerfile', 'go', 'html', 'java', 'latex', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'python', 'query', 'rust', 'vim', 'vimdoc' }
-  require('nvim-treesitter').install(parsers)
+  -- NOTE: there is no `plsql` treesitter parser. This `sql` parser handles
+  -- plain .sql fine, but chokes on PL/SQL package bodies -- which is why
+  -- SECTION 8.6 maps .pks/.pkb/etc to the `plsql` filetype instead, letting
+  -- Vim's built-in PL/SQL syntax file handle those.
+  local parsers = {
+    'bash', 'c', 'c_sharp', 'cpp', 'css', 'diff', 'dockerfile', 'go', 'html',
+    'java', 'latex', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'python',
+    'query', 'rust', 'sql', 'vim', 'vimdoc',
+  }
+  -- Parser installation is asynchronous: install() returns immediately and
+  -- compiles in the background, so parsers are NOT ready the moment Neovim
+  -- opens. On a fresh clone that looks like broken highlighting for the first
+  -- minute with nothing explaining why.
+  --
+  -- So: only ask for the parsers actually missing (avoids needless churn on
+  -- every startup), and use the returned Task's :await to report when the
+  -- compile finishes -- or why it failed.
+  do
+    local ts = require 'nvim-treesitter'
+    local have = {}
+    for _, p in ipairs(ts.get_installed 'parsers') do
+      have[p] = true
+    end
+    local missing = vim.tbl_filter(function(p) return not have[p] end, parsers)
+
+    if #missing > 0 then
+      vim.notify(
+        ('nvim-treesitter: compiling %d parser%s in the background (%s)')
+          :format(#missing, #missing == 1 and '' or 's', table.concat(missing, ', ')),
+        vim.log.levels.INFO
+      )
+      ts.install(missing):await(function(err)
+        vim.schedule(function()
+          if err then
+            -- The usual cause on Windows is no C compiler on PATH: the
+            -- tree-sitter CLI shells out to `cc`, which MinGW does not
+            -- provide. SECTION 0 sets vim.env.CC = 'gcc' to cover that.
+            vim.notify('nvim-treesitter: parser install failed: ' .. tostring(err), vim.log.levels.ERROR)
+          else
+            vim.notify(('nvim-treesitter: %d parser(s) ready'):format(#missing), vim.log.levels.INFO)
+          end
+        end)
+      end)
+    end
+  end
 
   ---@param buf integer
   ---@param language string
@@ -1043,14 +1233,18 @@ do
 
   -- [[ Obsidian vault integration ]]
   -- Wiki links, tags, backlinks, daily notes, search across your vault.
-  -- Set the OBSIDIAN_VAULT env var in your shell on each machine, or change the path below.
-  -- The vault directory must already exist before opening Neovim.
+  -- Set the OBSIDIAN_VAULT env var on each machine, or change the fallback below.
+  -- `vim.fs.normalize` keeps the path sane on Windows (forward slashes, ~ expanded),
+  -- and we create the directory if missing so obsidian.nvim doesn't error on startup.
+  local vault = vim.fs.normalize(vim.env.OBSIDIAN_VAULT or '~/obsidian')
+  if vim.fn.isdirectory(vault) == 0 then vim.fn.mkdir(vault, 'p') end
+
   vim.pack.add { gh 'obsidian-nvim/obsidian.nvim' }
   require('obsidian').setup {
     workspaces = {
       {
         name = 'vault',
-        path = vim.fn.expand(vim.env.OBSIDIAN_VAULT or '~/obsidian'),
+        path = vault,
       },
     },
     ui = { enable = false }, -- render-markdown.nvim handles visuals
@@ -1058,10 +1252,14 @@ do
 
   -- [[ LaTeX ]]
   -- vimtex provides compilation (\ll), PDF viewer (\lv), and navigation.
-  -- Per-machine system deps: sudo apt install texlive-full zathura
-  -- On macOS use 'skim' as the view method instead of 'zathura'.
+  -- Per-machine system deps:
+  --   Linux   : texlive + latexmk + zathura   (apt/pacman)
+  --   macOS   : mactex-no-gui + Skim          (brew)
+  --   Windows : MiKTeX (ships latexmk) + SumatraPDF  (winget)
+  -- SumatraPDF is the Windows viewer that supports vimtex forward/inverse search;
+  -- zathura has no usable native Windows build.
   vim.pack.add { gh 'lervag/vimtex' }
-  vim.g.vimtex_view_method = 'zathura'
+  vim.g.vimtex_view_method = (is_win and 'sumatrapdf') or (is_mac and 'skim') or 'zathura'
   vim.g.vimtex_compiler_method = 'latexmk'
 
   -- [[ HTML live preview ]]
@@ -1074,14 +1272,150 @@ do
 
   -- [[ Yazi file manager ]]
   -- Floating file manager with image previews, bulk rename, etc.
-  -- Replaces a traditional file tree. yazi is already installed on this machine.
+  -- Replaces a traditional file tree.
   -- Per-machine dep: install yazi (https://github.com/sxyazi/yazi)
-  vim.pack.add { gh 'mikavilpas/yazi.nvim' }
-  require('yazi').setup {
-    open_for_directories = true, -- `nvim .` opens yazi instead of netrw
+  --   Linux/macOS : cargo install yazi-fm yazi-cli  (or brew/pacman)
+  --   Windows     : winget install sxyazi.yazi
+  --
+  -- Only wire this up if the binary actually exists. Otherwise
+  -- `open_for_directories` would hijack `nvim .` and leave you with a broken
+  -- explorer and no netrw fallback.
+  if vim.fn.executable 'yazi' == 1 then
+    vim.pack.add { gh 'mikavilpas/yazi.nvim' }
+    require('yazi').setup {
+      open_for_directories = true, -- `nvim .` opens yazi instead of netrw
+    }
+    vim.keymap.set('n', '<leader>e', '<cmd>Yazi<cr>', { desc = 'Open [E]xplorer (Yazi)' })
+    vim.keymap.set('n', '<leader>E', '<cmd>Yazi cwd<cr>', { desc = 'Open [E]xplorer at cwd' })
+  end
+end
+
+-- ============================================================
+-- SECTION 8.6: DATABASE / ORACLE SQL
+-- vim-dadbod, dadbod-ui, dadbod-completion, PL/SQL filetypes
+-- ============================================================
+do
+  -- [[ Oracle / SQL client ]]
+  -- dadbod runs queries from a buffer and renders results in a split. For
+  -- Oracle it shells out to `sqlplus`, so that must be on PATH (it ships with
+  -- the Oracle client / Instant Client).
+  --
+  --   <leader>du  toggle the DBUI sidebar (schemas, tables, saved queries)
+  --   <leader>df  jump to the DBUI query buffer
+  --   <leader>dr  run the query under the cursor, or the visual selection
+  --
+  -- There is deliberately NO Oracle language server configured. `sqlls` only
+  -- understands generic ANSI SQL -- it cannot resolve packages, %ROWTYPE or
+  -- schema objects, so it would produce noise rather than useful diagnostics.
+  vim.pack.add {
+    gh 'tpope/vim-dadbod',
+    gh 'kristijanhusak/vim-dadbod-ui',
+    gh 'kristijanhusak/vim-dadbod-completion',
   }
-  vim.keymap.set('n', '<leader>e', '<cmd>Yazi<cr>', { desc = 'Open [E]xplorer (Yazi)' })
-  vim.keymap.set('n', '<leader>E', '<cmd>Yazi cwd<cr>', { desc = 'Open [E]xplorer at cwd' })
+
+  -- Connections are deliberately empty here. Never put a connection string
+  -- in this repo -- not even a hostname. Populate it either:
+  --   * interactively, with `A` in the DBUI sidebar. Those are saved under
+  --     stdpath('data')/db_ui, which is outside this git repo; or
+  --   * from the gitignored machine-local module, which can read them from
+  --     the environment, e.g.
+  --       vim.g.dbs = { mydb = vim.env.MYDB_URL }
+  --     with MYDB_URL set to something like
+  --       oracle:user/password@host:1521/servicename
+  --
+  -- NOTE: dadbod's oracle adapter cannot do Oracle wallet auth. Its
+  -- db#adapter#oracle#interactive() always builds `user/password@host` and
+  -- defaults to `system/oracle`, with no code path emitting the `/@ALIAS`
+  -- form a wallet needs. If your site uses a wallet, drive sqlplus directly
+  -- from the machine-local module instead of through dadbod.
+  vim.g.dbs = {}
+
+  vim.g.db_ui_win_position = 'left'
+  vim.g.db_ui_use_nerd_fonts = vim.g.have_nerd_font and 1 or 0
+  vim.g.db_ui_show_database_icon = 1
+  vim.g.db_ui_save_location = vim.fs.joinpath(vim.fn.stdpath 'data', 'db_ui')
+
+  -- IMPORTANT: dadbod-ui defaults this to 1, which executes the ENTIRE buffer
+  -- as a query every time you `:w`. On a shared dev database that is a nasty
+  -- surprise, so require an explicit run instead.
+  vim.g.db_ui_execute_on_save = 0
+
+  vim.keymap.set('n', '<leader>du', '<cmd>DBUIToggle<cr>', { desc = '[D]atabase: toggle [U]I' })
+  vim.keymap.set('n', '<leader>df', '<cmd>DBUIFindBuffer<cr>', { desc = '[D]atabase: [F]ind buffer' })
+  vim.keymap.set('n', '<leader>dr', '<Plug>(DBUI_ExecuteQuery)', { desc = '[D]atabase: [R]un query' })
+  vim.keymap.set('v', '<leader>dr', '<Plug>(DBUI_ExecuteQuery)', { desc = '[D]atabase: [R]un selection' })
+
+  -- [[ Site-specific SQL conventions ]]
+  -- Extra file-extension associations (Oracle shops tend to use their own set
+  -- for package bodies, views, table DDL and so on) and house indentation
+  -- deliberately do NOT live here -- they are site-specific and would make
+  -- this config non-portable. Put them in the machine-local module loaded at
+  -- the end of this section. The generic Oracle support above works without.
+
+  -- Table/column completion inside SQL buffers. dadbod-completion ships an
+  -- omnifunc, so this works with <C-x><C-o> immediately. Note blink.cmp does
+  -- not consume omnifunc sources -- wiring it into blink's popup would need
+  -- the extra `saghen/blink.compat` shim. See the README.
+  vim.api.nvim_create_autocmd('FileType', {
+    pattern = { 'sql', 'plsql', 'mysql' },
+    callback = function() vim.bo.omnifunc = 'vim_dadbod_completion#omni' end,
+    desc = 'Enable dadbod SQL completion via <C-x><C-o>',
+  })
+
+  -- [[ Machine-local configuration (optional, never committed) ]]
+  -- `lua/machine.lua` is gitignored. It is the place for anything tied to one
+  -- machine or one employer, so that none of it ends up in this repo:
+  --   * extra file-type associations for in-house Oracle extensions
+  --   * house indentation and a sqlfluff override via vim.g.sqlfluff_config
+  --   * private database tooling (wallet-backed wrappers, internal hosts)
+  --
+  -- pcall keeps it strictly optional: a fresh clone has no such file and
+  -- everything above still works, which is what keeps this config portable.
+  -- A genuine error inside the module is still reported, rather than being
+  -- silently swallowed along with the "not found" case.
+  local ok, err = pcall(require, 'machine')
+  if not ok and not tostring(err):match "module 'machine' not found" then
+    vim.notify('machine.lua failed to load: ' .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
+-- ============================================================
+-- SECTION 8.7: FILE & WORKSPACE NAVIGATION
+-- harpoon (pinned files), persistence (sessions), project picker
+-- ============================================================
+do
+  -- [[ Harpoon 2 ]]
+  -- Pin the handful of files you are actually working in and jump straight to
+  -- them. This replaces VS Code's pinned tabs, and it scales far better than
+  -- cycling buffers once a project gets large.
+  --   <leader>a    pin the current file
+  --   <C-e>        open the pin list (editable like a normal buffer)
+  --   <leader>1-5  jump to pin 1-5
+  vim.pack.add { { src = gh 'ThePrimeagen/harpoon', version = 'harpoon2' } }
+  local harpoon = require 'harpoon'
+  harpoon:setup()
+
+  vim.keymap.set('n', '<leader>a', function() harpoon:list():add() end, { desc = 'H[a]rpoon: pin current file' })
+  vim.keymap.set('n', '<C-e>', function() harpoon.ui:toggle_quick_menu(harpoon:list()) end, { desc = 'Harpoon: pin list' })
+  for i = 1, 5 do
+    vim.keymap.set('n', '<leader>' .. i, function() harpoon:list():select(i) end, { desc = 'Harpoon: go to pin ' .. i })
+  end
+
+  -- [[ Sessions ]]
+  -- Saves a session per directory, so reopening a repo restores your buffers,
+  -- splits and folds. This is VS Code's "reopen last workspace".
+  vim.pack.add { gh 'folke/persistence.nvim' }
+  require('persistence').setup()
+
+  vim.keymap.set('n', '<leader>ws', function() require('persistence').load() end, { desc = '[W]orkspace: restore [S]ession for cwd' })
+  vim.keymap.set('n', '<leader>wl', function() require('persistence').load { last = true } end, { desc = '[W]orkspace: restore [L]ast session' })
+  vim.keymap.set('n', '<leader>wd', function() require('persistence').stop() end, { desc = "[W]orkspace: [D]on't save this session" })
+
+  -- [[ Project switcher ]]
+  -- snacks.nvim is already installed, so its picker gives us a project list
+  -- without pulling in another plugin. Projects are detected from git roots
+  -- and from recent files.
+  vim.keymap.set('n', '<leader>wp', function() Snacks.picker.projects() end, { desc = '[W]orkspace: switch [P]roject' })
 end
 
 -- ============================================================
