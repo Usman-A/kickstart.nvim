@@ -91,7 +91,7 @@ P.S. You can delete this when you're done too. It's your config now! :)
 -- Run machine-setup.sh (Linux/macOS) or machine-setup.ps1 (Windows) for system deps.
 -- ============================================================
 -- Captured as early as possible so the dashboard can report startup time
--- without lazy.nvim's stats module. See the dashboard section in SECTION 3.
+-- without lazy.nvim's stats module. See the dashboard section in SECTION 4.
 local startup_ns = vim.uv.hrtime()
 
 local is_win = vim.fn.has 'win32' == 1
@@ -108,8 +108,8 @@ if is_win and vim.fn.executable 'cc' == 0 and vim.fn.executable 'cl' == 0 and vi
 end
 
 -- ============================================================
--- SECTION 1: FOUNDATION
--- Core Neovim settings, leaders, options, basic keymaps, basic autocmds
+-- SECTION 1: OPTIONS
+-- Core Neovim settings, leaders, options
 -- ============================================================
 do
   -- Enable faster startup by caching compiled Lua modules
@@ -220,7 +220,13 @@ do
   -- instead raise a dialog asking if you wish to save the current file(s)
   -- See `:help 'confirm'`
   vim.o.confirm = true
+end
 
+-- ============================================================
+-- SECTION 2: KEYMAPS & AUTOCMDS
+-- basic keymaps, basic autocmds
+-- ============================================================
+do
   -- [[ Basic Keymaps ]]
   --  See `:help vim.keymap.set()`
 
@@ -297,7 +303,7 @@ do
 end
 
 -- ============================================================
--- SECTION 2: PLUGIN MANAGER INTRO
+-- SECTION 3: PLUGIN MANAGER INTRO
 -- vim.pack intro, build hooks
 -- ============================================================
 do
@@ -376,7 +382,7 @@ end
 local function gh(repo) return 'https://github.com/' .. repo end
 
 -- ============================================================
--- SECTION 3: UI / CORE UX PLUGINS
+-- SECTION 4: UI / CORE UX PLUGINS
 -- guess-indent, gitsigns, which-key, colorscheme, todo-comments, mini modules
 -- ============================================================
 do
@@ -396,19 +402,13 @@ do
   vim.pack.add { gh 'NMAC427/guess-indent.nvim' }
   require('guess-indent').setup {}
 
-  -- Because lua is a real programming language, you can also have some logic to your installation -
-  -- like only installing a plugin if a condition is met.
-  --
-  -- Here we only install `nvim-web-devicons` (which adds pretty icons) if we have a Nerd Font,
-  -- since otherwise the icons won't display properly.
-  if vim.g.have_nerd_font then vim.pack.add { gh 'nvim-tree/nvim-web-devicons' } end
-
   -- Here is a more advanced configuration example that passes options to `gitsigns.nvim`
   --
   -- See `:help gitsigns` to understand what each configuration key does.
   -- Adds git related signs to the gutter, as well as utilities for managing changes
   vim.pack.add { gh 'lewis6991/gitsigns.nvim' }
-  require('gitsigns').setup {
+  local gitsigns = require 'gitsigns'
+  gitsigns.setup {
     signs = {
       add = { text = '+' }, ---@diagnostic disable-line: missing-fields
       change = { text = '~' }, ---@diagnostic disable-line: missing-fields
@@ -416,6 +416,46 @@ do
       topdelete = { text = '‾' }, ---@diagnostic disable-line: missing-fields
       changedelete = { text = '~' }, ---@diagnostic disable-line: missing-fields
     },
+    -- gitsigns.nvim's recommended keymaps:
+    on_attach = function(bufnr)
+      -- Navigation
+      vim.keymap.set('n', ']c', function()
+        if vim.wo.diff then
+          vim.cmd.normal { ']c', bang = true }
+        else
+          gitsigns.nav_hunk 'next'
+        end
+      end, { desc = 'Jump to next git [c]hange', buf = bufnr })
+
+      vim.keymap.set('n', '[c', function()
+        if vim.wo.diff then
+          vim.cmd.normal { '[c', bang = true }
+        else
+          gitsigns.nav_hunk 'prev'
+        end
+      end, { desc = 'Jump to previous git [c]hange', buf = bufnr })
+
+      -- Visual mode actions
+      vim.keymap.set('v', '<leader>hs', function() gitsigns.stage_hunk { vim.fn.line '.', vim.fn.line 'v' } end, { desc = 'git [s]tage hunk', buf = bufnr })
+      vim.keymap.set('v', '<leader>hr', function() gitsigns.reset_hunk { vim.fn.line '.', vim.fn.line 'v' } end, { desc = 'git [r]eset hunk', buf = bufnr })
+      -- Normal mode actions
+      vim.keymap.set('n', '<leader>hs', gitsigns.stage_hunk, { desc = 'git [s]tage hunk', buf = bufnr })
+      vim.keymap.set('n', '<leader>hr', gitsigns.reset_hunk, { desc = 'git [r]eset hunk', buf = bufnr })
+      vim.keymap.set('n', '<leader>hS', gitsigns.stage_buffer, { desc = 'git [S]tage buffer', buf = bufnr })
+      vim.keymap.set('n', '<leader>hR', gitsigns.reset_buffer, { desc = 'git [R]eset buffer', buf = bufnr })
+      vim.keymap.set('n', '<leader>hp', gitsigns.preview_hunk, { desc = 'git [p]review hunk', buf = bufnr })
+      vim.keymap.set('n', '<leader>hi', gitsigns.preview_hunk_inline, { desc = 'git preview hunk [i]nline', buf = bufnr })
+      vim.keymap.set('n', '<leader>hb', function() gitsigns.blame_line { full = true } end, { desc = 'git [b]lame line', buf = bufnr })
+      vim.keymap.set('n', '<leader>hd', gitsigns.diffthis, { desc = 'git [d]iff against index', buf = bufnr })
+      vim.keymap.set('n', '<leader>hD', function() gitsigns.diffthis '~' end, { desc = 'git [D]iff against last commit', buf = bufnr })
+      vim.keymap.set('n', '<leader>hQ', function() gitsigns.setqflist 'all' end, { desc = 'git hunk [Q]uickfix list (all files in repo)', buf = bufnr })
+      vim.keymap.set('n', '<leader>hq', gitsigns.setqflist, { desc = 'git hunk [q]uickfix list (all changes in this file)', buf = bufnr })
+      -- Toggles
+      vim.keymap.set('n', '<leader>tb', gitsigns.toggle_current_line_blame, { desc = '[T]oggle git show [b]lame line', buf = bufnr })
+      vim.keymap.set('n', '<leader>tw', gitsigns.toggle_word_diff, { desc = '[T]oggle git intra-line [w]ord diff', buf = bufnr })
+      -- Text object
+      vim.keymap.set({ 'o', 'x' }, 'ih', gitsigns.select_hunk, { desc = 'text object [i]nside [h]unk', buf = bufnr })
+    end,
   }
 
   -- Useful plugin to show you pending keybinds.
@@ -456,6 +496,13 @@ do
   -- [[ mini.nvim ]]
   --  A collection of various small independent plugins/modules
   vim.pack.add { gh 'nvim-mini/mini.nvim' }
+
+  -- If a nerd font is available, load the icons module for pretty icons in various plugins.
+  if vim.g.have_nerd_font then
+    require('mini.icons').setup()
+    -- Used for backwards compatibility with plugins that require `nvim-web-devicons` (e.g. telescope.nvim)
+    MiniIcons.mock_nvim_web_devicons()
+  end
 
   -- Better Around/Inside textobjects
   --
@@ -539,10 +586,10 @@ do
     quickfile = { enabled = true },          -- open files faster
     scroll = { enabled = true },             -- smooth scrolling
     terminal = { enabled = true },           -- floating terminal
-    -- Enabled only for Snacks.picker.projects() (<leader>wp in SECTION 8.7).
+    -- Enabled only for Snacks.picker.projects() (<leader>wp in SECTION 9.7).
     -- ui_select MUST stay false: it defaults to true when the picker is
     -- enabled and would take over vim.ui.select, silently replacing the
-    -- telescope-ui-select extension configured in SECTION 4.
+    -- telescope-ui-select extension configured in SECTION 5.
     picker = { enabled = true, ui_select = false },
   }
 
@@ -565,7 +612,7 @@ do
 end
 
 -- ============================================================
--- SECTION 4: SEARCH & NAVIGATION
+-- SECTION 5: SEARCH & NAVIGATION
 -- Telescope setup, keymaps, LSP picker mappings
 -- ============================================================
 do
@@ -700,11 +747,11 @@ do
   )
 
   -- Shortcut for searching your Neovim configuration files
-  vim.keymap.set('n', '<leader>sn', function() builtin.find_files { cwd = vim.fn.stdpath 'config' } end, { desc = '[S]earch [N]eovim files' })
+  vim.keymap.set('n', '<leader>sn', function() builtin.find_files { cwd = vim.fn.stdpath 'config', follow = true } end, { desc = '[S]earch [N]eovim files' })
 end
 
 -- ============================================================
--- SECTION 5: LSP
+-- SECTION 6: LSP
 -- LSP keymaps, server configuration, Mason tools installations
 -- ============================================================
 do
@@ -860,7 +907,8 @@ do
           if path ~= vim.fn.stdpath 'config' and (vim.uv.fs_stat(path .. '/.luarc.json') or vim.uv.fs_stat(path .. '/.luarc.jsonc')) then return end
         end
 
-        client.config.settings.Lua = vim.tbl_deep_extend('force', client.config.settings.Lua, {
+        local current_settings = client.config.settings --[[@as lspconfig.settings.lua_ls]]
+        client.config.settings.Lua = vim.tbl_deep_extend('force', current_settings.Lua, {
           runtime = {
             version = 'LuaJIT',
             path = { 'lua/?.lua', 'lua/?/init.lua' },
@@ -869,11 +917,15 @@ do
             checkThirdParty = false,
             -- NOTE: this is a lot slower and will cause issues when working on your own configuration.
             --  See https://github.com/neovim/nvim-lspconfig/issues/3189
-            -- NOTE: use list_extend, NOT tbl_extend. `vim.tbl_extend` merges by
-            -- KEY, so on two list-like tables it overwrites indices 1..n of the
+            -- Deliberate divergence from upstream: bd53f28 dropped the '${3rd}'
+            -- paths outright, on the grounds that luv/busted "are not really
+            -- relevant for neovim configs". This config leans on vim.uv (see
+            -- SECTION 0 and the on_init above), so the luv definitions earn
+            -- their keep -- they are what makes vim.uv complete and type-check.
+            -- NOTE: list_extend, NOT tbl_extend. `vim.tbl_extend` merges by KEY,
+            -- so on two list-like tables it overwrites indices 1..n of the
             -- runtime-file list with the '${3rd}' entries, silently dropping two
-            -- real runtime paths. Upstream kickstart hit the same bug -- see
-            -- commit bd53f28 "Fix corrupted library path of lua_ls".
+            -- real runtime paths. That was the bug bd53f28 fixed.
             library = vim.list_extend(vim.api.nvim_get_runtime_file('', true), {
               '${3rd}/luv/library',
               '${3rd}/busted/library',
@@ -899,6 +951,11 @@ do
 
   -- Automatically install LSPs and related tools to stdpath for Neovim
   require('mason').setup {}
+
+  -- Translates between nvim-lspconfig server names and mason.nvim package names (e.g. lua_ls <-> lua-language-server)
+  require('mason-lspconfig').setup {
+    automatic_enable = false, -- Change this to true if you want to automatically enable servers that are installed manually (e.g. via :Mason / :MasonInstall)
+  }
 
   -- Ensure the servers and tools above are installed
   --
@@ -929,7 +986,7 @@ do
 end
 
 -- ============================================================
--- SECTION 6: FORMATTING
+-- SECTION 7: FORMATTING
 -- conform.nvim setup and keymap
 -- ============================================================
 do
@@ -1007,7 +1064,7 @@ do
         -- `format` (not the built-in's `fix`): we want layout changes only,
         -- not rule auto-fixes rewriting existing SQL.
         -- A function, not a table, so the path is resolved at format time.
-        -- A machine-local module (see the end of SECTION 8.6) may set
+        -- A machine-local module (see the end of SECTION 9.6) may set
         -- vim.g.sqlfluff_config to point at house-style overrides; absent
         -- that we use the generic Oracle config committed here, so this file
         -- carries no site-specific style.
@@ -1050,7 +1107,7 @@ do
 end
 
 -- ============================================================
--- SECTION 6.5: LINTING
+-- SECTION 7.5: LINTING
 -- nvim-lint runs pylint on Python files and surfaces results as diagnostics.
 -- pylint automatically searches up the directory tree for .pylintrc, so your
 -- company's config is picked up without any extra setup here.
@@ -1072,7 +1129,7 @@ do
 end
 
 -- ============================================================
--- SECTION 7: AUTOCOMPLETE & SNIPPETS
+-- SECTION 8: AUTOCOMPLETE & SNIPPETS
 -- blink.cmp and luasnip setup
 -- ============================================================
 do
@@ -1154,7 +1211,7 @@ do
 end
 
 -- ============================================================
--- SECTION 8: TREESITTER
+-- SECTION 9: TREESITTER
 -- Parser installation, syntax highlighting, folds, indentation
 -- ============================================================
 do
@@ -1169,7 +1226,7 @@ do
   -- Ensure basic parsers are installed
   -- NOTE: there is no `plsql` treesitter parser. This `sql` parser handles
   -- plain .sql fine, but chokes on PL/SQL package bodies -- which is why
-  -- SECTION 8.6 maps .pks/.pkb/etc to the `plsql` filetype instead, letting
+  -- SECTION 9.6 maps .pks/.pkb/etc to the `plsql` filetype instead, letting
   -- Vim's built-in PL/SQL syntax file handle those.
   local parsers = {
     'bash', 'c', 'c_sharp', 'cpp', 'css', 'diff', 'dockerfile', 'go', 'html',
@@ -1259,7 +1316,7 @@ do
 end
 
 -- ============================================================
--- SECTION 8.5: WRITING, DOCUMENTS & FILE NAVIGATION
+-- SECTION 9.5: WRITING, DOCUMENTS & FILE NAVIGATION
 -- render-markdown, obsidian.nvim, vimtex, live-server, yazi
 -- ============================================================
 do
@@ -1329,7 +1386,7 @@ do
 end
 
 -- ============================================================
--- SECTION 8.6: DATABASE / ORACLE SQL
+-- SECTION 9.6: DATABASE / ORACLE SQL
 -- vim-dadbod, dadbod-ui, dadbod-completion, PL/SQL filetypes
 -- ============================================================
 do
@@ -1418,7 +1475,7 @@ do
 end
 
 -- ============================================================
--- SECTION 8.7: FILE & WORKSPACE NAVIGATION
+-- SECTION 9.7: FILE & WORKSPACE NAVIGATION
 -- harpoon (pinned files), persistence (sessions), project picker
 -- ============================================================
 do
@@ -1457,7 +1514,7 @@ do
 end
 
 -- ============================================================
--- SECTION 9: OPTIONAL EXAMPLES / NEXT STEPS
+-- SECTION 10: OPTIONAL EXAMPLES / NEXT STEPS
 -- kickstart.plugins.* examples
 -- ============================================================
 do
@@ -1475,12 +1532,20 @@ do
   -- require 'kickstart.plugins.lint'
   -- require 'kickstart.plugins.autopairs'
   -- require 'kickstart.plugins.neo-tree'
-  -- require 'kickstart.plugins.gitsigns' -- adds gitsigns recommended keymaps
 
-  -- NOTE: You can add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
+  -- NOTE: You can add your own plugins, configuration, etc. in `lua/custom/plugins/*.lua`.
   --
-  --  Uncomment the following line and add your plugins to `lua/custom/plugins/*.lua` to get going.
+  -- For independent modules, uncomment the convenience loader:
   -- require 'custom.plugins'
+  --
+  -- `custom.plugins` automatically loads files from that directory, but their
+  -- order is unspecified. If plugins depend on each other, keep them in the same
+  -- file and put their `vim.pack.add()` and `setup()` calls in the required order.
+  --
+  -- If separate modules need a specific order, require them explicitly instead:
+  -- require 'custom.plugins.colorscheme'
+  -- require 'custom.plugins.ui'
+  -- require 'custom.plugins.git'
 end
 
 -- The line beneath this is called `modeline`. See `:help modeline`
