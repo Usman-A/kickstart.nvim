@@ -90,6 +90,10 @@ P.S. You can delete this when you're done too. It's your config now! :)
 -- Anything OS-specific below branches on these flags rather than assuming *nix.
 -- Run machine-setup.sh (Linux/macOS) or machine-setup.ps1 (Windows) for system deps.
 -- ============================================================
+-- Captured as early as possible so the dashboard can report startup time
+-- without lazy.nvim's stats module. See the dashboard section in SECTION 3.
+local startup_ns = vim.uv.hrtime()
+
 local is_win = vim.fn.has 'win32' == 1
 local is_mac = vim.fn.has 'mac' == 1
 local is_wsl = not is_win and (vim.fn.has 'wsl' == 1 or (vim.uv.os_uname().release or ''):lower():find 'microsoft' ~= nil)
@@ -496,7 +500,41 @@ do
   vim.pack.add { gh 'folke/snacks.nvim' }
   require('snacks').setup {
     bigfile = { enabled = true },            -- disable heavy features for very large files
-    dashboard = { enabled = true },          -- nice startup screen
+    -- Sections are spelled out because the DEFAULT set is incompatible with
+    -- vim.pack. snacks' built-in `startup` section calls
+    -- require('lazy.stats') unconditionally, so on any non-lazy.nvim config
+    -- it throws "module 'lazy.stats' not found" from a UIEnter autocommand
+    -- every time the dashboard opens. The replacement below reports the same
+    -- numbers from vim.pack.get().
+    --
+    -- Also note `section = 'session'` is pointless here: snacks gates it on
+    -- M.have_plugin, which is `package.loaded.lazy and ...`, so it silently
+    -- renders nothing without lazy. Use <leader>wl to restore a session.
+    dashboard = {
+      enabled = true,
+      sections = {
+        { section = 'header' },
+        { section = 'keys', gap = 1, padding = 1 },
+        function()
+          local plugins = vim.pack.get()
+          local active = 0
+          for _, p in ipairs(plugins) do
+            if p.active then active = active + 1 end
+          end
+          -- hrtime is nanoseconds; render one decimal place of milliseconds.
+          local ms = math.floor((vim.uv.hrtime() - startup_ns) / 1e5 + 0.5) / 10
+          return {
+            align = 'center',
+            text = {
+              { (vim.g.have_nerd_font and '󰒲 ' or '') .. 'Neovim loaded ', hl = 'footer' },
+              { active .. '/' .. #plugins, hl = 'special' },
+              { ' plugins in ', hl = 'footer' },
+              { ms .. 'ms', hl = 'special' },
+            },
+          }
+        end,
+      },
+    },
     notifier = { enabled = true, timeout = 3000 }, -- replaces vim.notify with a styled popup
     quickfile = { enabled = true },          -- open files faster
     scroll = { enabled = true },             -- smooth scrolling
